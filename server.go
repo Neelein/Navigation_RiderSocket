@@ -1,15 +1,14 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
+	"context"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 
 	"github.com/gorilla/mux"
 	"github.com/gorilla/websocket"
+	"github.com/segmentio/kafka-go"
 )
 
 var upgrader = websocket.Upgrader{
@@ -37,10 +36,6 @@ func handleRider(w http.ResponseWriter, r *http.Request) {
 		log.Fatal("connect server error", err)
 	}
 
-	jsondata, err := json.Marshal(map[string]string{
-		"Topic":     "test",
-		"Partition": "0"})
-
 	if err != nil {
 		log.Fatal("json marshal error", err)
 	}
@@ -48,32 +43,35 @@ func handleRider(w http.ResponseWriter, r *http.Request) {
 	defer conn.Close()
 
 	for {
-		messageType, data, err := conn.ReadMessage()
+		messageType, _, err := conn.ReadMessage()
 
 		if err != nil {
-			log.Fatal(err)
-			return
+			log.Fatal("read message", err)
 		}
 
-		fmt.Println(data)
+		k := kafka.NewReader(kafka.ReaderConfig{
+			Brokers:   []string{"localhost:3000", "localhost:3001"},
+			Topic:     "test2",
+			GroupID:   "customer-group",
+			Partition: 0,
+			MaxBytes:  10e6,
+		})
 
-		resp, err := http.Post(
-			"http://localhost:5000/api/v2/write",
-			"*/*",
-			bytes.NewBuffer(jsondata),
-		)
+		for {
+			m, err := k.ReadMessage(context.Background())
 
-		bodyByte, err := io.ReadAll(resp.Body)
+			if err != nil {
+				break
+			}
+			fmt.Printf("message at topic/partition/offset %v/%v/%v: %s = %s\n", m.Topic, m.Partition, m.Offset, string(m.Key), string(m.Value))
 
-		if err != nil {
-			log.Fatal("read resp fail", err)
+			if err := conn.WriteMessage(messageType, []byte(m.Value)); err != nil {
+				log.Fatal("write message err", err)
+			}
 		}
 
-		fmt.Println(string(bodyByte))
-
-		if err := conn.WriteMessage(messageType, data); err != nil {
-			log.Fatal(err)
-			return
+		if err := k.Close(); err != nil {
+			log.Fatal("failed to close reader")
 		}
 	}
 }
